@@ -9,7 +9,15 @@ import warnings
 
 import qrcode
 from pdf2image import convert_from_path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageColor, ImageDraw
+
+
+def is_white_color(color: str) -> bool:
+    """Return True when the provided Pillow color resolves to pure white."""
+    try:
+        return ImageColor.getcolor(color, "RGBA")[:3] == (255, 255, 255)
+    except ValueError:
+        return False
 
 
 def generate_qr_with_logo(
@@ -18,6 +26,10 @@ def generate_qr_with_logo(
     output_path: str = "qr_code_with_logo.png",
     qr_size: int = 10,
     border: int = 4,
+    fill_color: str = "black",
+    background_color: str = "white",
+    transparent_background: bool = False,
+    logo_background_color: str | None = None,
     logo_size_ratio: float = 0.3,
     logo_border_width: int = 5,
     logo_border_padding: int = 10,
@@ -32,6 +44,10 @@ def generate_qr_with_logo(
         output_path (str): Path where the final QR code will be saved
         qr_size (int): Size of the QR code (1-40, higher = more dense)
         border (int): Width of the border around the QR code
+        fill_color (str): Color of the QR modules
+        background_color (str): Color of the QR background
+        transparent_background (bool): Whether the QR background should be transparent
+        logo_background_color (str | None): Background behind the logo area; defaults to transparent when the QR background is transparent, otherwise uses the QR background color
         logo_size_ratio (float): Ratio of logo size to QR code size (0.1-0.4 recommended)
         logo_border_width (int): Width of the border around the logo in pixels
         logo_border_padding (int): Space between logo and border in pixels
@@ -49,7 +65,18 @@ def generate_qr_with_logo(
         qr.add_data(url)
         qr.make(fit=True)
 
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        background = "transparent" if transparent_background else background_color
+        qr_img = qr.make_image(fill_color=fill_color, back_color=background).convert(
+            "RGBA"
+        )
+
+        if (
+            transparent_background
+            and os.path.splitext(output_path)[1].lower() in {".jpg", ".jpeg"}
+        ):
+            raise ValueError(
+                "Transparent background requires an output format that supports alpha, such as PNG or WebP."
+            )
 
         if logo_path.lower().endswith(".pdf"):
             try:
@@ -82,7 +109,18 @@ def generate_qr_with_logo(
             logo.size[1] + 2 * total_border_size,
         )
 
-        logo_composite = Image.new("RGB", logo_with_border_size, "white")
+        resolved_logo_background_color = logo_background_color
+        if resolved_logo_background_color is None:
+            resolved_logo_background_color = (
+                "transparent" if transparent_background else background_color
+            )
+
+        if resolved_logo_background_color == "transparent":
+            logo_background = (0, 0, 0, 0)
+        else:
+            logo_background = resolved_logo_background_color
+
+        logo_composite = Image.new("RGBA", logo_with_border_size, logo_background)
 
         if logo_border_width > 0:
             draw = ImageDraw.Draw(logo_composite)
@@ -106,7 +144,18 @@ def generate_qr_with_logo(
             (qr_height - logo_composite.size[1]) // 2,
         )
 
-        qr_img.paste(logo_composite, composite_pos)
+        if resolved_logo_background_color == "transparent":
+            qr_img.paste(
+                (0, 0, 0, 0),
+                (
+                    composite_pos[0],
+                    composite_pos[1],
+                    composite_pos[0] + logo_composite.size[0],
+                    composite_pos[1] + logo_composite.size[1],
+                ),
+            )
+
+        qr_img.paste(logo_composite, composite_pos, mask=logo_composite)
 
         qr_img.save(output_path, quality=95, optimize=False, dpi=(300, 300))
         print(f"QR code successfully generated: {output_path}")
@@ -155,6 +204,29 @@ def main():
         default=4,
         help="Width of the border around the QR code in boxes (default: 4)",
     )
+    parser.add_argument(
+        "--fill-color",
+        type=str,
+        default="black",
+        help="Color of the QR modules, for example black, white, or #0f766e (default: black)",
+    )
+    parser.add_argument(
+        "--background-color",
+        type=str,
+        default="white",
+        help="Color of the QR background when transparency is not enabled (default: white)",
+    )
+    parser.add_argument(
+        "--transparent-background",
+        action="store_true",
+        help="Save the QR background as transparent. Use a format that supports alpha, such as PNG.",
+    )
+    parser.add_argument(
+        "--logo-background-color",
+        type=str,
+        default=None,
+        help="Background behind the logo area. Defaults to transparent when the QR background is transparent, otherwise uses the QR background color.",
+    )
 
     # Logo parameters
     parser.add_argument(
@@ -184,6 +256,11 @@ def main():
 
     args = parser.parse_args()
 
+    if args.transparent_background and is_white_color(args.fill_color):
+        warnings.warn(
+            "White QR modules on a transparent background may appear invisible on white surfaces or in image viewers with a white canvas."
+        )
+
     if not os.path.exists(args.logo):
         warnings.warn(f"Logo file '{args.logo}' not found.")
         warnings.warn("Please provide a valid logo file path using --logo argument.")
@@ -197,7 +274,8 @@ def main():
         )
         qr.add_data(args.url)
         qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
+        background = "transparent" if args.transparent_background else args.background_color
+        img = qr.make_image(fill_color=args.fill_color, back_color=background)
         img.save("simple_qr_code.png")
         print("Simple QR code (without logo) saved as: simple_qr_code.png")
         return
@@ -212,6 +290,10 @@ def main():
         output_path=args.output,
         qr_size=args.qr_size,
         border=args.border,
+        fill_color=args.fill_color,
+        background_color=args.background_color,
+        transparent_background=args.transparent_background,
+        logo_background_color=args.logo_background_color,
         logo_size_ratio=args.logo_size_ratio,
         logo_border_width=args.logo_border_width,
         logo_border_padding=args.logo_border_padding,
